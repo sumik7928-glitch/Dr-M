@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: uid, displayName, email, phoneNumber, photoURL, role
+    //
+    // Collection: appointments
+    // Fields: id, patientId, patientName, patientAge, patientPhone, symptoms, city, clinicLocation, date, timeSlot, status, createdAt
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAppointmentOwner(data) {
+      return isAuthenticated() && request.auth.uid == data.patientId;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid is string &&
+             data.email is string &&
+             (!('role' in data) || data.role in ['patient', 'admin']);
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['patientId', 'patientName', 'patientPhone', 'city', 'clinicLocation', 'date', 'timeSlot', 'status']) &&
+             data.patientId is string &&
+             data.patientName is string && data.patientName.size() < 100 &&
+             data.patientPhone is string && data.patientPhone.size() < 20 &&
+             data.city in ['Hyderabad', 'Mirpurkhas'] &&
+             data.status in ['pending', 'confirmed', 'cancelled', 'completed'];
+    }
+
+    // User Rules
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && 
+                    (!('role' in request.resource.data) || request.resource.data.role == resource.data.role);
+    }
+
+    // Appointment Rules
+    match /appointments/{appointmentId} {
+      allow read: if isAuthenticated() && (isAppointmentOwner(resource.data) || 
+                  get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
+      
+      allow create: if isAuthenticated() && isAppointmentOwner(request.resource.data) && isValidAppointment(request.resource.data);
+      
+      allow update: if isAuthenticated() && (
+        (isAppointmentOwner(resource.data) && 
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'patientName', 'patientAge', 'patientPhone', 'symptoms']) &&
+         request.resource.data.status == 'cancelled') ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin'
+      );
+      
+      allow delete: if false; // Prefer cancellation
+    }
+  }
+}
